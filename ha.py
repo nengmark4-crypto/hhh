@@ -1,82 +1,79 @@
-import subprocess
-import sys
-import os
-import asyncio
-
-# ===== تنزيل المكتبات تلقائياً =====
-def install_packages():
-    packages = ["flask", "python-telegram-bot==21.6", "requests"]
-    for package in packages:
-        pkg_name = package.split("==")[0].replace("-", "_")
-        try:
-            __import__(pkg_name)
-        except ImportError:
-            print(f"📦 جاري تثبيت {package}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-install_packages()
-
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import threading
+import time
+import urllib.request
+import urllib.parse
 
 # ===== الإعدادات =====
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ لازم تحط BOT_TOKEN في Environment Variables")
+BOT_TOKEN = "8248984044:AAFJvizVHKO9NzsFMvuHd84cxbPKZ17RMvw"
+PORT = 5000
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # مثال: https://your-app.onrender.com
-PORT = int(os.environ.get("PORT", 5000))
+# ===== إرسال رسالة =====
+def send_message(chat_id, text):
+    url = f"{API}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text
+    }).encode()
+    try:
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"خطأ في الإرسال: {e}")
 
-app = Flask(__name__)
+# ===== استقبال الرسائل =====
+def poll_updates():
+    last_update_id = 0
+    print("🤖 البوت بدأ يستقبل الرسائل...")
+    while True:
+        try:
+            url = f"{API}/getUpdates?offset={last_update_id + 1}&timeout=30"
+            with urllib.request.urlopen(url, timeout=40) as resp:
+                data = json.loads(resp.read().decode())
 
-# ===== أوامر البوت =====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"👋 أهلاً {user.first_name}!\n"
-        f"✅ البوت شغال تمام.\n"
-        f"🆔 الـ ID بتاعك: `{user.id}`",
-        parse_mode="Markdown"
-    )
+            if data.get("ok"):
+                for update in data["result"]:
+                    last_update_id = update["update_id"]
+                    message = update.get("message")
+                    if not message:
+                        continue
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 الأوامر المتاحة:\n"
-        "/start - بدء البوت\n"
-        "/help - المساعدة\n"
-        "/ping - اختبار السرعة"
-    )
+                    text = message.get("text", "")
+                    chat_id = message["chat"]["id"]
+                    user_name = message["from"].get("first_name", "صديقي")
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong!")
+                    print(f"📩 رسالة من {user_name}: {text}")
 
-# ===== تهيئة البوت =====
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("help", help_cmd))
-telegram_app.add_handler(CommandHandler("ping", ping))
+                    if text == "/start":
+                        send_message(chat_id,
+                            f"👋 أهلاً {user_name}!\n"
+                            f"✅ البوت شغال تمام.\n"
+                            f"🆔 الـ ID بتاعك: {chat_id}")
+                    elif text == "/ping":
+                        send_message(chat_id, "🏓 Pong!")
+                    elif text == "/help":
+                        send_message(chat_id, "📋 الأوامر:\n/start\n/ping\n/help")
+                    else:
+                        send_message(chat_id, f"استلمت رسالتك: {text}")
 
-# ===== مسارات Flask =====
-@app.route("/")
-def home():
-    return "<h1>🤖 Bot is running!</h1>"
+        except Exception as e:
+            print(f"⚠️ خطأ: {e}")
+            time.sleep(3)
 
-@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
-    return "ok", 200
+# ===== سيرفر ويب للاستضافة =====
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("<h1>🤖 Bot is running!</h1>".encode("utf-8"))
 
-# ===== تشغيل السيرفر =====
-def setup_webhook():
-    if WEBHOOK_URL:
-        url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        import requests
-        r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={url}")
-        print(f"🔗 Webhook setup: {r.json()}")
+    def log_message(self, format, *args):
+        pass
 
 if __name__ == "__main__":
-    setup_webhook()
+    threading.Thread(target=poll_updates, daemon=True).start()
     print(f"🚀 Server running on port {PORT}")
-    app.run(host="0.0.0.0", port=PORT)
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
